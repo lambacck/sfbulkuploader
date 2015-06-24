@@ -91,7 +91,7 @@ DATABASES = {
 CACHES = {
     'default': {
         'BACKEND': 'django_redis.cache.RedisCache',
-        'LOCATION': os.environ.get('REDISTOGO_URL', 'localhost:6379'),
+        'LOCATION': os.environ.get('REDISCLOUD_URL', 'localhost:6379'),
         'OPTIONS': {
             'CLIENT_CLASS': 'django_redis.client.DefaultClient',
         }
@@ -166,7 +166,7 @@ LOGGING = {
 
 
 # CELERY SETTINGS
-BROKER_URL = os.environ.get('REDISTOGO_URL', 'redis://localhost:6379/0')
+BROKER_URL = os.environ.get('REDISCLOUD_URL', 'redis://localhost:6379/0')
 CELERY_RESULT_BACKEND = os.environ.get('CELERY_RESULT_BACKEND', BROKER_URL)
 
 CELERY_ACCEPT_CONTENT = ['json']
