@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% load i18n %}
+
+{% block content %}
+
+<a href="{% url 'bulkupload:authredirect' %}">{% trans "Login to your Salesforce Account to get started" %}</a>
+
+{% endblock %}
