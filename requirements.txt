@@ -7,7 +7,7 @@ SQLAlchemy==1.0.5
 whitenoise==1.0.6
 requests==2.3.0
 redis==2.10.3
-django-redis-cache==0.13.1
+django-redis==4.1.0
 django-braces==1.8.0
 https://github.com/neworganizing/salesforce-oauth2/archive/master.zip#egg=0.1
 salesforce-bulk==1.0.9
