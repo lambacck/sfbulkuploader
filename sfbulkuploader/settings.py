@@ -91,7 +91,7 @@ DATABASES = {
 CACHES = {
     'default': {
         'BACKEND': 'redis_cache.RedisCache',
-        'LOCATION': os.environ.get('REDIS_LOCATION', 'localhost:6379'),
+        'LOCATION': os.environ.get('REDISTOGO_URL', 'localhost:6379'),
     },
 }
 
@@ -163,7 +163,7 @@ LOGGING = {
 
 
 # CELERY SETTINGS
-BROKER_URL = os.environ.get('CELERY_BROKER_URL', 'redis://localhost:6379/0')
+BROKER_URL = os.environ.get('REDISTOGO_URL', 'redis://localhost:6379/0')
 CELERY_RESULT_BACKEND = os.environ.get('CELERY_RESULT_BACKEND', BROKER_URL)
 
 CELERY_ACCEPT_CONTENT = ['json']
