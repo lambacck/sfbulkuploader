@@ -9,4 +9,6 @@ urlpatterns = [
     url(r'^login-result$', views.AuthReturn.as_view(), name='authreturn'),
     url(r'^database$', views.DatabaseStringView.as_view(), name='database'),
     url(r'^tables$', views.DatabaseTableView.as_view(), name='select_table'),
+    url(r'^progress/(?P<taskid>[A-Fa-f0-9]{8}-(?:[A-Fa-f0-9]{4}-){3}[A-Fa-f0-9]{12})$', views.ProgressView.as_view(), name='progress'),
+    url(r'^status/(?P<taskid>[A-Fa-f0-9]{8}-(?:[A-Fa-f0-9]{4}-){3}[A-Fa-f0-9]{12})$', views.StatusView.as_view(), name='status'),
 ]

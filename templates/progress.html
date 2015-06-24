@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% load i18n %}
+{% load staticfiles %}
+
+{% block content %}
+<div id="in-progress" class="alert alert-info" role="alert">Your request is in progress.</div>
+<img src="{% static "ajax-loader.gif" %}" id="throbber">
+<div id="log-container">
+</div>
+
+{% endblock %}
+
+{% block bottomscripts %}
+<script type="text/javascript" src="{% static "progress.js" %}"></script>
+{% endblock %}

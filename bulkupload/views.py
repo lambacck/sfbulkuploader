@@ -1,22 +1,23 @@
 import logging
 from urlparse import urlparse
+from cgi import escape
 
 from django.conf import settings
 from django.core.urlresolvers import reverse, reverse_lazy
 from django.core.exceptions import ImproperlyConfigured
 from django.utils.translation import ugettext_lazy as _
-from django.views.generic import RedirectView, TemplateView, FormView
+from django.views.generic import RedirectView, TemplateView, FormView, View
 
-from braces.views import SetHeadlineMixin
+from braces.views import SetHeadlineMixin, JSONResponseMixin
 from braces.views._access import AccessMixin
 
 from salesforce_oauth2 import SalesforceOAuth2
-from salesforce_bulk import SalesforceBulk, CsvDictsAdapter
 
 from sqlalchemy import create_engine
-from sqlalchemy.sql import text
+from celery.result import AsyncResult
 
 from .forms import DatabaseConnectionStringForm, DatabaseTableForm
+from .tasks import upload_table
 
 log = logging.getLogger(__name__)
 
@@ -33,20 +34,6 @@ def get_oauth_handler(request):
         client_secret,
         request.build_absolute_uri(reverse('bulkupload:authreturn')),
         sandbox=settings.SALESFORCE_SANDBOX)
-
-
-def field_modifier(value):
-    if hasattr(value, 'isoformat'):
-        return value.isoformat()
-
-    if value is None:
-        return ''
-
-    return unicode(value).encode('utf-8')
-
-
-def row_modifier(row):
-    return [field_modifier(x) for x in row]
 
 
 class RootView(RedirectView):
@@ -94,21 +81,16 @@ class AuthReturn(RedirectView):
 
 class LogoutView(RedirectView):
     permanent = False
-    redirect_url = reverse_lazy('bulkupload:login')
 
     def get_redirect_url(self, *args, **kwargs):
-        session = self.request
+        session = self.request.session
         if 'access_token' in session:
             handler = get_oauth_handler(self.request)
             handler.revoke_token(session['access_token'])
 
-            try:
-                del session['access_token']
-                del session['instance_url']
-            except KeyError:
-                pass
+        session.clear()
 
-        return super(LogoutView, self).get_redirect_url(*args, **kwargs)
+        return reverse('bulkupload:login')
 
 
 class SalesforceLoginRequiredMixin(AccessMixin):
@@ -152,18 +134,11 @@ class DatabaseTableView(SalesforceLoginRequiredMixin, SetHeadlineMixin, FormView
     template_name = 'database_tables.html'
     form_class = DatabaseTableForm
     headline = _('Select Table to Upload')
-    success_url = reverse_lazy('bulkupload:select_table')
-
-    def get_engine(self):
-        if not hasattr(self, 'sqlengine'):
-            self.sqlengine = create_engine(self.request.session['connectionstring'])
-
-        return self.sqlengine
 
     def get_form_kwargs(self):
         retval = super(DatabaseTableView, self).get_form_kwargs()
 
-        engine = self.get_engine()
+        engine = create_engine(self.request.session['connectionstring'])
         tables = [u'.'.join(x) for x in engine.execute('''select table_schema, table_name FROM information_schema.tables where table_schema <> 'information_schema' and table_schema <> 'pg_catalog' ''')]
 
         retval['tablelist'] = tables
@@ -171,44 +146,69 @@ class DatabaseTableView(SalesforceLoginRequiredMixin, SetHeadlineMixin, FormView
 
         return retval
 
+    def get_success_url(self):
+
+        return reverse('bulkupload:progress', kwargs={'taskid': self.result.id})
+
     def form_valid(self, form):
         tablename = form.cleaned_data['table']
 
         schema, table = tablename.split('.')
         session = self.request.session
 
-        bulk = SalesforceBulk(
-            sessionId=session['access_token'],
-            host=urlparse(session['instance_url']).hostname)
+        sessionId = session['access_token']
+        host = urlparse(session['instance_url']).hostname
+        connection_string = session['connectionstring']
 
-        engine = self.get_engine()
-        result = engine.execute(text('select column_name from information_schema.columns where table_name = :table and table_schema = :schema'), {'table': table, 'schema': schema})
-        exclude = ['sfid', 'id', 'systemmodstamp', 'isdeleted']
-        columns = [x[0] for x in result if not x[0].startswith('_') and x[0].lower() not in exclude]
-
-        log.debug('columns: %s', columns)
-        column_select = ','.join('"%s"' % x for x in columns)
-
-        result = engine.execute('select %s from %s' % (column_select, tablename))
-
-        dict_iter = (dict(zip(columns, row_modifier(row))) for row in result)
-        dict_iter = list(dict_iter)
-        log.debug('Sending rows: %s', [x['name'] for x in dict_iter])
-        csv_iter = CsvDictsAdapter(iter(dict_iter))
-
-        job = bulk.create_insert_job(table.capitalize(), contentType='CSV')
-        batch = bulk.post_bulk_batch(job, csv_iter)
-
-        bulk.wait_for_batch(job, batch)
-
-        bulk_result = []
-
-        def save_results(rows, failed, remaining):
-            bulk_result[:] = [rows, failed, remaining]
-
-        flag = bulk.get_upload_results(job, batch, callback=save_results)
-        log.debug('results: %s, %s', flag, bulk_result)
-
-        bulk.close_job(job)
+        # call task
+        self.result = upload_table.delay(sessionId, host, tablename, connection_string)
 
         return super(DatabaseTableView, self).form_valid(form)
+
+
+class ProgressView(SalesforceLoginRequiredMixin, SetHeadlineMixin, TemplateView):
+    template_name = 'progress.html'
+    headline = _('Request Status')
+
+    def get_context_data(self, **kwargs):
+        context = super(ProgressView, self).get_context_data(**kwargs)
+        context['taskid'] = kwargs['taskid']
+        return context
+
+
+class StatusView(JSONResponseMixin, View):
+    def get(self, request, *args, **kwargs):
+
+        result = AsyncResult(kwargs['taskid'])
+        log_html = u''
+
+        if result.ready():
+            if result.successful():
+                rows, failed, remaining = result.result
+                log_html = []
+                has_error = False
+                for i, row in enumerate(rows):
+                    if i:
+                        has_error = has_error or not not row[-1]
+                        row_tmpl = u'<tr><td>%s</td></tr>'
+                        col_join = u'</td><td>'
+                    else:
+                        row_tmpl = u'<tr><th>%s</th></tr>'
+                        col_join = u'</th><th>'
+
+                    log_html.append(row_tmpl % col_join.join(escape(x) for x in row))
+
+                log_html = u'<table class="table">%s</table>' % u''.join(log_html)
+
+                if has_error:
+                    log_html = u'<div class="alert alert-danger" role="alert">At least one row was not transferred. Please see log below for details.</div>' + log_html
+                else:
+                    log_html = u'<div class="alert alert-success" role="alert">All rows successfully added.</div>' + log_html
+            else:
+                log_html = u'<div class="alert alert-danger" role="alert">%s</div>' % escape(unicode(result.result))
+        context_dict = {
+            'completed': result.ready(),
+            'log_html': log_html,
+        }
+
+        return self.render_json_response(context_dict)
